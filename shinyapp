@@ -1,0 +1,398 @@
+## Libraries required
+
+library(shiny)  # Import the Shiny library for building web applications
+library(openxlsx)  # Import openxlsx for working with Excel files
+library(DT)  # Import DT for interactive tables
+library(tm)  # Import tm for text mining operations
+library(dplyr)  # Import dplyr for data manipulation
+library(ggplot2)  # Import ggplot2 for data visualization
+library("factoextra")  # Import factoextra for additional factor analysis plots
+library(topicmodels)  # Import topicmodels for topic modeling
+
+## MainPanel UI
+
+ui <- fluidPage(  # Create the user interface layout
+  
+  ##  App. title
+  titlePanel("Web Application For Failure Analysis Applying Text Mining"),  # Set the application title
+  
+  ##  Sidebar
+  sidebarLayout(
+    ##  Side bar menu
+    sidebarPanel(
+      ##   File upload
+      fileInput("file", "Select file to upload", accept = c(".xlsx", ".csv")),  # Widget to upload files
+      
+      ##   Select filter column
+      selectInput("column_select", "Select filter column", ""),  # Widget to select filter column
+      
+      ##   Select Text to analyze
+      selectInput("analysis_column", "Select text to analyze", ""),  # Widget to select text column
+      
+      selectInput("language_select", "Select language for stopwords", choices = list("English" = "en", "Spanish" = "es")),  # Language selection
+      
+      ##   Transform text, to eliminate symbols, numbers, and punctuation
+      actionButton("transform_button", "1. Transform Text"),  # Button to trigger text transformation
+      
+      ##   Generate Term Document Matrix
+      actionButton("generate_matrix_button", "2. Generate Term Document Matrix"),  # Button to generate Term Document Matrix
+      
+      ##   Remove Sparse Terms
+      actionButton("remove_sparse_button", "3. Remove Sparse Terms & Generate Frequent Terms List"),  # Button to remove sparse terms
+      
+      ##   Threshold to remove sparse value
+      textInput("sparse_value", "Sparse value threshold", value = 0.99),  # Widget to set sparse value threshold
+      
+      ##   Generate Association Analysis
+      actionButton("association_analysis_button", "4. Association Analysis"),  # Button to perform association analysis
+      
+      
+      ##   Threshold for Association Analysis
+      textInput("corr_value", "Association Analysis Threshold", value = 0.25),  # Widget to set correlation threshold
+      
+      ##   Number of terms used for Association Analysis
+      textInput("top_term_value", "# of terms used in for Association Analysis", value = 5),  # Widget to set number of terms for analysis
+      
+      ##   Cluster Analysis & Dendrogram
+      actionButton("cluster_analysis_button", "5. Cluster Analysis"),  # Button to perform cluster analysis and generate dendrogram
+      
+      # Topic Modeling
+      actionButton("lda_button", "6. Topic Modeling"),  # Button to perform topic modeling
+      ##   Number of topics
+      textInput("topic_number", "Number of topics", value = 3),  # Widget to set the topic number
+      ##   Number of word per topic
+      textInput("word_number", "Number of Words per Topic", value = 3)  # Widget to set the word number
+    ),
+    
+    mainPanel(
+      # Select value to Filter
+      selectInput("filter_value", "Filter Value", ""),  # Widget to select filter value
+      
+      ##  Panel menu
+      tabsetPanel(
+        ##  Data Tab
+        tabPanel("Data", 
+                 tags$h3("Original Data"),  # Header for original data
+                 dataTableOutput("table"),  # Output for original data table
+           
+                 tags$h3("1. Transformed Text"),  # Header for transformed text
+                 dataTableOutput("transformed_table")  # Output for transformed text table
+        ),
+        
+        ##  Term Document Matrix Summary Tab
+        tabPanel("Term Document Matrix Summary", 
+                 ##  Sparse TDM Summary
+                 tags$h3("Sparse TDM Summary"),  # Header for sparse TDM summary
+                 plotOutput("term_matrix_histogram"),  # Output for sparse TDM histogram
+                 verbatimTextOutput("term_matrix_data"),  # Output for sparse TDM data
+                 
+                 ##  Non Sparse TDM Summary
+                 tags$h3("Non Sparse TDM Summary"),  # Header for non-sparse TDM summary
+                 plotOutput("term_matrix_histogram1"),  # Output for non-sparse TDM histogram
+                 verbatimTextOutput("term_matrix_data1")  # Output for non-sparse TDM data
+        ),
+        
+        ##  Frequent Terms Tab
+        tabPanel("Frequent Terms",  # Tab for frequent terms
+                 dataTableOutput("non_sparse_terms")  # Output for frequent terms table
+        ),
+        
+        ##  Association Analysis Tab
+        tabPanel("Association Analysis",  # Tab for association analysis
+                 verbatimTextOutput("association_results")  # Output for association analysis results
+        ),
+        
+        ##  Cluster Analysis & Dendrogram Tab
+        tabPanel("Cluster Analysis",  # Tab for cluster analysis and dendrogram
+                 ##  Dendrogram
+                 tags$h3("Dendrogram"),  # Header for dendrogram
+                 plotOutput("dendrogram_plot"),  # Output for dendrogram plot
+                 
+                 ##  Cluster Analysis
+                 tags$h3("# of Clusters"),  # Header for number of clusters
+                 plotOutput("wss_plot"),  # Output for within sum of squares plot
+                 plotOutput("silhouette_plot")  # Output for silhouette plot
+                 #plotOutput("gap_stat_plot")  # Output for gap statistic plot
+        ),
+        
+        ##  Topic Modeling Tab
+        tabPanel("Topic Modeling",  # Tab for topic modeling
+                 verbatimTextOutput("lda_output")  # Output for topic modeling results
+        )
+      )
+    )
+  )
+)
+
+
+server <- function(input, output, session) {
+  
+  # Define a reactive expression named 'data'
+  data <- reactive({
+    # Ensure that a file is uploaded
+    req(input$file)
+    
+    # Store the uploaded file
+    inFile <- input$file
+    
+    # Check if the uploaded file is in .xlsx format
+    if (grepl(".xlsx", inFile$name, ignore.case = TRUE)) {
+      # If .xlsx file, read it using read.xlsx function
+      data <- read.xlsx(inFile$datapath, 1)
+    } else {
+      # If not .xlsx file, assume it's a .csv file and read it using read.csv function
+      data <- read.csv(inFile$datapath)
+    }
+    
+    ##   Update Select filter column
+    # Update the choices for the Select Input named 'column_select' with column names from the data
+    updateSelectInput(session, "column_select", choices = names(data))
+    
+    ##   Update Select Text to analyze
+    # Update the choices for the Select Input named 'analysis_column' with column names from the data
+    updateSelectInput(session, "analysis_column", choices = names(data))
+    
+    # Return the data read from the file
+    return(data)
+  })
+  
+  
+  # Observe changes in the selected column for filtering
+  observe({
+    col_name <- input$column_select
+    # Get unique values from the selected column
+    unique_values <- unique(data()[[col_name]])
+    # Sort values from the selected filter column in descending order
+    sorted_values <- names(sort(table(data()[[col_name]]), decreasing = TRUE))
+    # Update the choices for the Select Input named 'filter_value' with sorted values
+    updateSelectInput(session, "filter_value", choices = sorted_values)
+  })
+  
+  ##   Filter data from selected column function
+  filtered_data <- reactive({
+    # Ensure required inputs are available
+    req(data(), input$column_select, input$filter_value)
+    # Copy the original data
+    data_filtered <- data()
+    # Filter the data based on the selected column and filter value
+    data_filtered <- data_filtered[data_filtered[[input$column_select]] == input$filter_value, ]
+    # Arrange the filtered data by descending order of occurrences
+    data_filtered <- arrange(data_filtered, desc(n()))
+    return(data_filtered)
+  })
+  
+  ##   Render filtered data
+  output$table <- renderDataTable({
+    # Render the filtered data as a datatable
+    datatable(filtered_data(), options = list(pageLength = 5))
+  })
+  
+  ##   Generate corpus from selected filter function
+  corpus_output <- reactive({
+    # Ensure required inputs are available
+    req(input$analysis_column, input$filter_value)
+    col_name <- input$analysis_column
+    # Create a corpus from the selected column in the filtered data
+    filtered_corpus <- Corpus(VectorSource(filtered_data()[[col_name]]))
+    ##   Set maximum display text to analyze
+    max_display <- 30
+    # Extract text from the corpus
+    corpus_output <- sapply(head(filtered_corpus, max_display), as.character)
+    corpus_output <- data.frame(corpus_output, stringsAsFactors = FALSE)
+    return(corpus_output)
+  })
+  
+  
+  ##   Generate transformed text function
+  transformed_data <- eventReactive(input$transform_button, {
+    # Ensure filtered data is available
+    req(filtered_data())
+    # Create a corpus from the selected column in the filtered data
+    transformed_corpus <- Corpus(VectorSource(filtered_data()[[input$analysis_column]]))
+    
+    # Extract stopwords from the selected language
+    stopwords_language <- input$language_select
+    stopwords_list <- stopwords(stopwords_language)
+
+    # Transform the corpus: convert to lowercase, remove punctuation, numbers, and stopwords
+    transformed_corpus <- tm_map(transformed_corpus, content_transformer(tolower))
+    transformed_corpus <- tm_map(transformed_corpus, removePunctuation)
+    transformed_corpus <- tm_map(transformed_corpus, removeNumbers)
+    transformed_corpus <- tm_map(transformed_corpus, removeWords, stopwords_list)
+    # Convert the transformed corpus into a dataframe
+    transformed_data <- data.frame(TextoTransformado = sapply(transformed_corpus, as.character), stringsAsFactors = FALSE)
+    return(transformed_data)
+  })
+  
+  # Render transformed data table
+  output$transformed_table <- renderDataTable({
+    # Render the transformed data as a datatable
+    datatable(transformed_data(), options = list(pageLength = 5))
+  })
+  
+  # Define reactive object to store term matrix data
+  terms_matrix_data <- reactiveVal(NULL)
+  # Define reactive object to store term corpus data
+  term_corpus_data <- reactiveVal(NULL)
+  
+  ## Generate Sparse Term Document Matrix (TDM) function
+  observeEvent(input$generate_matrix_button, {
+    req(transformed_data())
+    
+    # Create a term corpus from transformed data
+    term_corpus <- Corpus(VectorSource(transformed_data()$TextoTransformado))
+    # Create a term document matrix (TDM) from the term corpus
+    term_doc_matrix <- TermDocumentMatrix(term_corpus)
+    # Calculate term frequency
+    term_freq <- rowSums(as.matrix(term_doc_matrix))
+    
+    # Store term corpus and term matrix data in reactive objects
+    term_corpus_data(term_corpus)
+    terms_matrix_data(term_doc_matrix)
+    
+    ## Render Sparse TDM histogram
+    output$term_matrix_histogram <- renderPlot({
+      hist(term_freq, main = "Sparse TDM Histogram", xlab = "Term Frequency", ylab = "Number of Temrs",col = "skyblue", border = "black")
+    })
+    ## Render Term Matrix Data
+    output$term_matrix_data <- renderPrint({
+      terms_matrix_data()
+    })
+  })
+  
+  # Define reactive object to store non-sparse term document matrix
+  term_doc_matrix_sparse_reactive <- reactiveVal(NULL)
+  # Define reactive object to store frequent terms dataframe
+  frequentTermsDF_reactive <- reactiveVal(NULL)
+  
+  ## Generate Non-Sparse TDM function
+  observeEvent(input$remove_sparse_button, {
+    req(terms_matrix_data())
+    
+    # Convert sparse threshold input to numeric
+    sparse_threshold <- as.numeric(input$sparse_value)
+    # Remove sparse terms from the term document matrix
+    term_doc_matrix_sparse <- removeSparseTerms(terms_matrix_data(), sparse = sparse_threshold)
+    
+    # Store non-sparse term document matrix in reactive object
+    term_doc_matrix_sparse_reactive(term_doc_matrix_sparse)
+    
+    # Calculate term frequency for non-sparse matrix
+    term_freq_sparse <- rowSums(as.matrix(term_doc_matrix_sparse))
+    
+    ## Generate Frequent Terms List
+    term.freq <- rowSums(as.matrix(term_freq_sparse))
+    subsetterm.freq <- subset(term.freq, term.freq >= mean(term.freq))
+    frequentTermsSubsetDF <- data.frame(term = names(subsetterm.freq), freq = subsetterm.freq)
+    frequentTermsDF <- data.frame(term = names(term.freq), freq = term.freq)
+    frequentTermsSubsetDF <- frequentTermsSubsetDF[with(frequentTermsSubsetDF, order(-frequentTermsSubsetDF$freq)), ]
+    frequentTermsDF <- frequentTermsDF[with(frequentTermsDF, order(-frequentTermsDF$freq)), ]
+    frequentTermsDF_reactive(frequentTermsDF)
+    
+    ## Render Frequent Terms List
+    output$non_sparse_terms <- renderDataTable({
+      subset_df <- frequentTermsSubsetDF[, 1:2]
+      rownames(subset_df) <- NULL
+      subset_df
+    })
+    
+    ## Render Non-Sparse TDM histogram
+    output$term_matrix_histogram1 <- renderPlot({
+      hist(term_freq_sparse, main = "Non Sparse TDM Histogram",  xlab = "Term Frequency", ylab = "Number of Temrs", col = "skyblue", border = "black")
+    })
+    
+    ## Render term_doc_matrix_sparse
+    output$term_matrix_data1 <- renderPrint({
+      term_doc_matrix_sparse
+    })
+  })
+  
+  ## Generate Association Analysis Function
+  observeEvent(input$association_analysis_button, {
+    req(term_doc_matrix_sparse_reactive())
+    req(frequentTermsDF_reactive())
+    
+    # Retrieve non-sparse term document matrix and frequent terms dataframe
+    term_doc_matrix_sparse <- term_doc_matrix_sparse_reactive()
+    frequentTermsDF <- frequentTermsDF_reactive()
+    
+    # Get the number of top terms to consider
+    NTCA <- as.numeric(input$top_term_value)
+    # Get the top terms
+    top_terms <- frequentTermsDF[1:NTCA, 1]
+    
+    # Convert top terms into a matrix
+    term_matrix <- matrix(top_terms)
+    # Get the correlation threshold
+    corr_threshold <- as.numeric(input$corr_value)
+    # Perform association analysis for each term
+    fitness.associations <- findAssocs(term_doc_matrix_sparse, term_matrix, corr_threshold)
+    
+    # Display the association results
+    output$association_results <- renderPrint({
+      print(fitness.associations)
+    })
+  })
+  
+  
+  # Observer to perform cluster analysis when the corresponding button is clicked
+  observeEvent(input$cluster_analysis_button, {
+    req(term_doc_matrix_sparse_reactive()) # Ensure term matrix data is available
+    
+    # Convert term matrix to a matrix for cluster analysis
+    OTDescDTM.0 <- as.matrix(term_doc_matrix_sparse_reactive())
+    
+    # Perform hierarchical clustering
+    hc0 <- hclust(dist(OTDescDTM.0, method = "euclidean"), method = "complete")
+    
+    # Plot the dendrogram in the new tabPanel
+    output$dendrogram_plot <- renderPlot({
+      plot(hc0, yaxt = 'n', cex = 1)
+    })
+    
+    # Calculate the optimal number of clusters using different methods
+    wss <- fviz_nbclust(OTDescDTM.0, kmeans, method = "wss")
+    silhouette <- fviz_nbclust(OTDescDTM.0, kmeans, method = "silhouette")
+    #gap_stat <- fviz_nbclust(OTDescDTM.0, kmeans, method = "gap_stat")
+    
+    # Plot the optimal number of clusters in the new tabPanel
+    output$wss_plot <- renderPlot({
+      wss
+    })
+    
+    output$silhouette_plot <- renderPlot({
+      silhouette
+    })
+    
+    
+  })
+  
+  # Define a reactive variable to store the result of LDA
+  lda_results <- reactiveVal(NULL)
+  
+  # Observer to perform LDA analysis when the corresponding button is clicked
+  observeEvent(input$lda_button, {
+    req(term_corpus_data())  # Ensure term-document matrix is available
+    
+    # Create Document-Term Matrix (DTM)
+    OTDescDTM2 <- DocumentTermMatrix(term_corpus_data())
+    # Convert topic number input to numeric
+    topic_num <- as.numeric(input$topic_number)
+    # Convert word number input to numeric
+    word_num <- as.numeric(input$word_number)
+    # Execute LDA
+    lda_model <-  CTM(OTDescDTM2, k = topic_num) 
+    
+    # Store the results in the reactive variable
+    lda_results(terms(lda_model, word_num))  # Get the terms for each topic
+    
+    # Observer to render the LDA output
+    output$lda_output <- renderPrint({
+      lda_results()  # Display the results stored in the reactive variable
+    })
+  })
+  
+  
+}
+
+shinyApp(ui, server)
