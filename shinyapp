@@ -381,7 +381,7 @@ server <- function(input, output, session) {
     # Convert word number input to numeric
     word_num <- as.numeric(input$word_number)
     # Execute LDA
-    lda_model <-  CTM(OTDescDTM2, k = topic_num) 
+    lda_model <-  LDA(OTDescDTM2, k = topic_num) 
     
     # Store the results in the reactive variable
     lda_results(terms(lda_model, word_num))  # Get the terms for each topic
